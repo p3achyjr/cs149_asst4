@@ -1,35 +1,32 @@
 #include "page_rank.h"
 
-#include <stdlib.h>
-#include <cmath>
 #include <omp.h>
+#include <stdlib.h>
+
+#include <cmath>
 #include <utility>
 
 #include "../common/CycleTimer.h"
 #include "../common/graph.h"
 
-
 // pageRank --
 //
 // g:           graph to process (see common/graph.h)
-// solution:    array of per-vertex vertex scores (length of array is num_nodes(g))
-// damping:     page-rank algorithm's damping parameter
+// solution:    array of per-vertex vertex scores (length of array is
+// num_nodes(g)) damping:     page-rank algorithm's damping parameter
 // convergence: page-rank algorithm's convergence threshold
 //
-void pageRank(Graph g, double* solution, double damping, double convergence)
-{
-
-
+void pageRank(Graph g, double* solution, double damping, double convergence) {
   // initialize vertex weights to uniform probability. Double
   // precision scores are used to avoid underflow for large graphs
 
   int numNodes = num_nodes(g);
   double equal_prob = 1.0 / numNodes;
+#pragma omp parallel for
   for (int i = 0; i < numNodes; ++i) {
     solution[i] = equal_prob;
   }
-  
-  
+
   /*
      CS149 students: Implement the page rank algorithm here.  You
      are expected to parallelize the algorithm using openMP.  Your
@@ -53,9 +50,57 @@ void pageRank(Graph g, double* solution, double damping, double convergence)
        // compute how much per-node scores have changed
        // quit once algorithm has converged
 
-       global_diff = sum over all nodes vi { abs(score_new[vi] - score_old[vi]) };
-       converged = (global_diff < convergence)
+       global_diff = sum over all nodes vi { abs(score_new[vi] - score_old[vi])
+     }; converged = (global_diff < convergence)
      }
 
    */
+  double* score_new = new double[numNodes]();
+  int iteration = 0;
+  while (true) {
+    // compute sink node score once.
+    double sink_score = 0.0f;
+#pragma omp parallel for reduction(+ : sink_score)
+    for (int v = 0; v < numNodes; ++v) {
+      if (outgoing_size(g, v) == 0) {
+        sink_score += damping * solution[v] / numNodes;
+      }
+    }
+
+// compute score_new[vi] for all nodes vi:
+#pragma omp parallel for
+    for (Vertex vi = 0; vi < numNodes; ++vi) {
+      const Vertex* begin = incoming_begin(g, vi);
+      int size = incoming_size(g, vi);
+      double incoming_sum = 0.0;
+      for (int offset = 0; offset < size; ++offset) {
+        Vertex vj = *(begin + offset);
+        int num_edges = outgoing_size(g, vj);
+        incoming_sum += solution[vj] / num_edges;
+      }
+
+      incoming_sum = damping * incoming_sum + (1.0 - damping) / numNodes;
+      incoming_sum += sink_score;
+      score_new[vi] = incoming_sum;
+    }
+
+    double global_diff = 0.0;
+#pragma omp parallel for reduction(+ : global_diff)
+    for (Vertex v = 0; v < numNodes; ++v) {
+      global_diff += std::abs(score_new[v] - solution[v]);
+    }
+
+#pragma omp parallel for
+    for (Vertex v = 0; v < numNodes; ++v) {
+      solution[v] = score_new[v];
+    }
+
+    if (global_diff < convergence) {
+      break;
+    }
+
+    ++iteration;
+  }
+
+  delete[] score_new;
 }
